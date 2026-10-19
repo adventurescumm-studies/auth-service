@@ -16,3 +16,16 @@ logging:
     root: info
     store: debug
     org.springframework.web: debug
+
+management:
+  endpoints:
+    web:
+      base-path: /gateway/actuator
+      exposure:
+        include: ['prometheus']
+
+spring:
+  cloud:
+    gateway:
+      metrics:
+        enabled: true
