@@ -20,12 +20,6 @@ logging:
 management:
   endpoints:
     web:
-      base-path: /gateway/actuator
+      base-path: /auth/actuator
       exposure:
         include: ['prometheus']
-
-spring:
-  cloud:
-    gateway:
-      metrics:
-        enabled: true
