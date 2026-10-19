@@ -1,33 +1,97 @@
 pipeline {
+    // Agente Linux com Git, JDK 25, Maven e Docker Buildx no PATH.
+    // Em jobs Pipeline comuns, configure o SCM para a branch main.
     agent any
-    environment {
-        SERVICE = 'auth' // Name of the service being built
-        NAME = "weirdessen/${env.SERVICE}" // Docker Hub repository name
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
     }
+
+    environment {
+        SERVICE = 'auth'
+        NAME = "weirdessen/${env.SERVICE}"
+        MAVEN_REPO = "${env.WORKSPACE}/.m2/repository"
+    }
+
     stages {
-        stage('Dependecies') {
+        stage('Dependencies - account') {
             steps {
-                build job: 'auth', wait: true
+                dir('.jenkins-deps/account') {
+                    deleteDir()
+                    git branch: 'main', url: 'https://github.com/adventurescumm-studies/account.git'
+                    sh 'mvn -B -ntp -Dmaven.repo.local="$MAVEN_REPO" clean install'
+                }
             }
         }
-        stage('Build') { 
+
+        stage('Dependencies - auth') {
             steps {
-                sh 'mvn -B -DskipTests clean package'
+                dir('.jenkins-deps/auth') {
+                    deleteDir()
+                    git branch: 'main', url: 'https://github.com/adventurescumm-studies/auth.git'
+                    sh 'mvn -B -ntp -Dmaven.repo.local="$MAVEN_REPO" clean install'
+                }
             }
-        }      
+        }
+
+        stage('Build & Test') {
+            steps {
+                sh 'mvn -B -ntp -Dmaven.repo.local="$MAVEN_REPO" clean verify'
+            }
+        }
+
         stage('Build & Push Image') {
+            when {
+                // Multibranch: publica somente main, sem publicar pull requests.
+                expression { !env.CHANGE_ID && (!env.BRANCH_NAME || env.BRANCH_NAME == 'main') }
+            }
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'dockerhub-credential',
-                    usernameVariable: 'USERNAME',
-                    passwordVariable: 'TOKEN')])
-                {
-                    sh "docker login -u $USERNAME -p $TOKEN"
-                    sh "docker buildx create --use --platform=linux/arm64,linux/amd64 --node multi-platform-builder-${env.SERVICE} --name multi-platform-builder-${env.SERVICE}"
-                    sh "docker buildx build --platform=linux/arm64,linux/amd64 --push --tag ${env.NAME}:latest --tag ${env.NAME}:${env.BUILD_ID} -f Dockerfile ."
-                    sh "docker buildx rm --force multi-platform-builder-${env.SERVICE}"
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_TOKEN'
+                )]) {
+                    // Aspas simples deixam a expansao das credenciais para o shell.
+                    sh '''
+                        set +x
+                        set -eu
+
+                        build_dir="$(mktemp -d)"
+                        builder=""
+                        builder_created=false
+                        cleanup() {
+                            if [ "$builder_created" = true ]; then
+                                docker buildx rm --force "$builder" >/dev/null 2>&1 || true
+                            fi
+                            rm -rf "$build_dir"
+                        }
+                        trap cleanup EXIT
+                        trap 'exit 130' INT
+                        trap 'exit 143' TERM
+
+                        export DOCKER_CONFIG="$build_dir/docker"
+                        builder="${SERVICE}-${BUILD_NUMBER}-$(basename "$build_dir" | tr '[:upper:]' '[:lower:]')"
+                        mkdir -p "$DOCKER_CONFIG" "$build_dir/context/target"
+
+                        # Envia apenas o Dockerfile e o JAR, sem o cache Maven.
+                        cp Dockerfile "$build_dir/context/Dockerfile"
+                        cp target/*.jar "$build_dir/context/target/"
+
+                        printf '%s' "$DOCKER_TOKEN" | docker login --username "$DOCKER_USERNAME" --password-stdin
+                        docker buildx create --name "$builder" --driver docker-container
+                        builder_created=true
+
+                        docker buildx build --builder "$builder" --platform linux/arm64,linux/amd64 --push --tag "$NAME:latest" --tag "$NAME:$BUILD_NUMBER" --file "$build_dir/context/Dockerfile" "$build_dir/context"
+                    '''
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
         }
     }
 }
