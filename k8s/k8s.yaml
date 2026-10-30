@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth
+  template:
+    metadata:
+      labels:
+        app: auth
+    spec:
+      containers:
+        - name: auth
+          image: weirdessen/auth:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: auth-env
+                  key: JWT_SECRET_KEY
+
+            - name: JWT_HTTP_ONLY
+              valueFrom:
+                secretKeyRef:
+                  name: auth-env
+                  key: JWT_HTTP_ONLY
+
+          startupProbe:
+            httpGet:
+              path: /auth/health-check
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+
+          readinessProbe:
+            httpGet:
+              path: /auth/health-check
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: auth
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: http
